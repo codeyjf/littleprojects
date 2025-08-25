@@ -4,7 +4,7 @@
 #include "KrpcLogger.h"
 #include <iostream>
 
-// 注册服务对象及其方法，以便服务端能够处理客户端的RPC请求
+// 注册服务对象及其方法，保存到service_map，全是范式，根据.proto文件的配置来的
 void KrpcProvider::NotifyService(google::protobuf::Service *service) {
     // 服务端需要知道客户端想要调用的服务对象和方法，
     // 这些信息会保存在一个数据结构（如 ServiceInfo）中。
@@ -62,17 +62,17 @@ void KrpcProvider::Run() {
 
     // 将当前RPC节点上要发布的服务全部注册到ZooKeeper上，让RPC客户端可以在ZooKeeper上发现服务
     ZkClient zkclient;
-    zkclient.Start();  // 连接ZooKeeper服务器
+    zkclient.Start();  //连接ZooKeeper服务器
     // service_name为永久节点，method_name为临时节点
     for (auto &sp : service_map) {
         // service_name 在ZooKeeper中的目录是"/"+service_name
         std::string service_path = "/" + sp.first;
         zkclient.Create(service_path.c_str(), nullptr, 0);  // 创建服务节点
         for (auto &mp : sp.second.method_map) {
-            std::string method_path = service_path + "/" + mp.first;
+            std::string method_path = service_path + "/" + mp.first;// /UserServiceRpc/Login、/UserServiceRpc/Register
             char method_path_data[128] = {0};
-            sprintf(method_path_data, "%s:%d", ip.c_str(), port);  // 将IP和端口信息存入节点数据
-            // ZOO_EPHEMERAL表示这个节点是临时节点，在客户端断开连接后，ZooKeeper会自动删除这个节点
+            sprintf(method_path_data, "%s:%d", ip.c_str(), port);  // 将IP和端口信息存入节点数据 127.0.0.1:8000
+            // ZOO_EPHEMERAL表示这个节点是临时节点，在客户端(应该是服务端)断开连接后，ZooKeeper会自动删除这个节点
             zkclient.Create(method_path.c_str(), method_path_data, strlen(method_path_data), ZOO_EPHEMERAL);
         }
     }
@@ -101,24 +101,31 @@ void KrpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::ne
     std::string recv_buf = buffer->retrieveAllAsString();
 
     // 使用protobuf的CodedInputStream反序列化RPC请求
+    //高效解析protobuf二进制数据，可以分步骤、有控制地解析数据
+    /*
+    安全性 - 提供边界检查，防止缓冲区溢出
+    效率 - 支持变长编码，节省网络带宽
+    灵活性 - 支持流式解析，不需要一次性加载所有数据
+    标准化 - 使用protobuf标准的I/O接口，保证兼容性
+    */
     google::protobuf::io::ArrayInputStream raw_input(recv_buf.data(), recv_buf.size());
     google::protobuf::io::CodedInputStream coded_input(&raw_input);
 
-    uint32_t header_size{};
-    coded_input.ReadVarint32(&header_size);  // 解析header_size
+    uint32_t header_size{};// C++11统一初始化，所有类型通用，等价于uint32_t header_size = 0; 
+    coded_input.ReadVarint32(&header_size);  // 解析header_size，读取varint编码的长度
 
     // 根据header_size读取数据头的原始字符流，反序列化数据，得到RPC请求的详细信息
     std::string rpc_header_str;
-    Krpc::RpcHeader krpcHeader;
+    Krpc::RpcHeader krpcHeader;//.proto提供
     std::string service_name;
     std::string method_name;
     uint32_t args_size{};
 
-    // 设置读取限制
-    google::protobuf::io::CodedInputStream::Limit msg_limit = coded_input.PushLimit(header_size);
-    coded_input.ReadString(&rpc_header_str, header_size);
+    // 设置读取限制 安全读取RPC头部
+    google::protobuf::io::CodedInputStream::Limit msg_limit = coded_input.PushLimit(header_size);// 设置边界：只能读取4字节
+    coded_input.ReadString(&rpc_header_str, header_size);// 读取RPC头部信息到rpc_header_str
     // 恢复之前的限制，以便安全地继续读取其他数据
-    coded_input.PopLimit(msg_limit);
+    coded_input.PopLimit(msg_limit);// 恢复边界
 
     if (krpcHeader.ParseFromString(rpc_header_str)) {
         service_name = krpcHeader.service_name();
@@ -130,12 +137,13 @@ void KrpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::ne
     }
 
     std::string args_str;  // RPC参数
-    // 直接读取args_size长度的字符串数据
+    // 直接读取args_size长度的字符串数据，起点会自动更新
     bool read_args_success = coded_input.ReadString(&args_str, args_size);
     if (!read_args_success) {
         KrpcLogger::ERROR("read args error");
         return;
     }
+/*=============以上都是把rpc报文反序列化=====================*/
 
     // 获取service对象和method对象
     auto it = service_map.find(service_name);

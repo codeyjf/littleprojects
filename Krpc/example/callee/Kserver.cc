@@ -46,16 +46,27 @@ public:
 };
 
 int main(int argc, char **argv) {
-    // 调用框架的初始化操作，解析命令行参数并加载配置文件
+    // 解析命令行参数./server -i ./test.conf并加载json配置文件
     KrpcApplication::Init(argc, argv);
 
     // 创建一个 RPC 服务提供者对象
     KrpcProvider provider;
 
     // 将 UserService 对象发布到 RPC 节点上，使其可以被远程调用
+    // 注册服务对象及其方法，保存到service_map
     provider.NotifyService(new UserService());
 
+        /*总结
+        要达到百万级连接和QPS，需要：
+        线程数：从4增加到64-128个
+        架构：单机→多进程→分布式集群
+        性能：无锁化、零拷贝、内存池
+        系统：操作系统参数调优
+        硬件：高性能服务器配置
+        成本：显著的硬件和运维投入*/
     // 启动 RPC 服务节点，进入阻塞状态，等待远程的 RPC 调用请求
+    //利用muduo管理服务，管理rpcIP，事务驱动，实现高并发
+    //注册服务到zookeeper，服务注册和发现(相当于)
     provider.Run();
 
     return 0;

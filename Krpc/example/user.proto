@@ -25,6 +25,7 @@ message RegisterResponse{
     ResultCode result=1;
     bool success=2;
 }
+//服务描述名UserServiceRpc，两个方法Login、Register
 service UserServiceRpc{
     rpc Login(LoginRequest) returns(LoginResponse);
     rpc Register(RegisterRequest) returns(RegisterResponse);
